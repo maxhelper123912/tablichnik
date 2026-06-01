@@ -1,7 +1,14 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
+import sys
 import math
+
+
+def resource_path(name: str) -> str:
+    """Works both from source and inside a PyInstaller --onefile bundle."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
 
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -32,6 +39,9 @@ class App(_Base):
         self.minsize(480, 420)
         self.configure(bg=BG)
         self.files: list[str] = []
+        ico = resource_path("icon.ico")
+        if os.path.exists(ico):
+            self.iconbitmap(ico)
         self._build_ui()
         if HAS_DND:
             self._setup_dnd()
