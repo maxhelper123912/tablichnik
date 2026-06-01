@@ -2,7 +2,6 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
 import sys
-import math
 
 
 def resource_path(name: str) -> str:
@@ -26,6 +25,29 @@ DROP_BG = "#e8f0fe"
 DROP_BORDER = "#93c5fd"
 CARD_BG = "#ffffff"
 BTN_SECONDARY = "#475569"
+
+
+def _make_chunks(data: list, mode: str, value: int) -> list[list]:
+    """Split data rows into chunks without dropping any row.
+
+    mode='parts': exactly `value` parts, rows distributed as evenly as possible.
+    mode='rows':  each part has at most `value` rows.
+    """
+    if not data:
+        return []
+
+    if mode == "rows":
+        return [data[i: i + value] for i in range(0, len(data), value)]
+
+    # mode == "parts"
+    n = min(value, len(data))   # can't have more parts than rows
+    base, extra = divmod(len(data), n)
+    chunks, start = [], 0
+    for i in range(n):
+        size = base + (1 if i < extra else 0)
+        chunks.append(data[start: start + size])
+        start += size
+    return chunks
 
 
 _Base = TkinterDnD.Tk if HAS_DND else tk.Tk
@@ -286,19 +308,11 @@ class App(_Base):
             headers = list(all_rows[0])
             data = all_rows[1:]
 
-            if mode == "parts":
-                chunk_size = math.ceil(len(data) / value) if data else 1
-                n_parts = value
-            else:
-                chunk_size = value
-                n_parts = math.ceil(len(data) / chunk_size) if data else 1
+            chunks = _make_chunks(data, mode, value)
 
             base = os.path.splitext(os.path.basename(fpath))[0]
             saved = 0
-            for i in range(n_parts):
-                chunk = data[i * chunk_size: (i + 1) * chunk_size]
-                if not chunk:
-                    continue
+            for i, chunk in enumerate(chunks):
                 new_wb = Workbook()
                 new_ws = new_wb.active
                 new_ws.append(headers)
