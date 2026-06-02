@@ -2,12 +2,14 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
 import sys
+from copy import copy
 
 
 def resource_path(name: str) -> str:
     """Works both from source and inside a PyInstaller --onefile bundle."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
+
 
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -27,10 +29,38 @@ CARD_BG = "#ffffff"
 BTN_SECONDARY = "#475569"
 
 
-def _make_chunks(data: list, mode: str, value: int) -> list[list]:
-    """Split data rows into chunks without dropping any row.
+# ── xlsx formatting helpers ───────────────────────────────────────────────────
 
-    mode='parts': exactly `value` parts, rows distributed as evenly as possible.
+def _copy_cell(src, dest) -> None:
+    dest.value = src.value
+    if src.has_style:
+        dest.font = copy(src.font)
+        dest.fill = copy(src.fill)
+        dest.border = copy(src.border)
+        dest.alignment = copy(src.alignment)
+        dest.number_format = src.number_format
+        dest.protection = copy(src.protection)
+
+
+def _copy_col_dims(src_ws, dest_ws) -> None:
+    for col, dim in src_ws.column_dimensions.items():
+        dest_ws.column_dimensions[col].width = dim.width
+        dest_ws.column_dimensions[col].hidden = dim.hidden
+
+
+def _copy_row_height(src_ws, src_idx: int, dest_ws, dest_idx: int) -> None:
+    dim = src_ws.row_dimensions.get(src_idx)
+    if dim:
+        dest_ws.row_dimensions[dest_idx].height = dim.height
+        dest_ws.row_dimensions[dest_idx].hidden = dim.hidden
+
+
+# ── chunk logic ───────────────────────────────────────────────────────────────
+
+def _make_chunks(data: list, mode: str, value: int) -> list[list]:
+    """Split data rows without dropping any row.
+
+    mode='parts': exactly `value` parts, distributed as evenly as possible.
     mode='rows':  each part has at most `value` rows.
     """
     if not data:
@@ -40,7 +70,7 @@ def _make_chunks(data: list, mode: str, value: int) -> list[list]:
         return [data[i: i + value] for i in range(0, len(data), value)]
 
     # mode == "parts"
-    n = min(value, len(data))   # can't have more parts than rows
+    n = min(value, len(data))
     base, extra = divmod(len(data), n)
     chunks, start = [], 0
     for i in range(n):
@@ -49,6 +79,8 @@ def _make_chunks(data: list, mode: str, value: int) -> list[list]:
         start += size
     return chunks
 
+
+# ── app ───────────────────────────────────────────────────────────────────────
 
 _Base = TkinterDnD.Tk if HAS_DND else tk.Tk
 
@@ -76,7 +108,6 @@ class App(_Base):
         tk.Label(header, text="  работа с .xlsx файлами",
                  font=("Segoe UI", 12), bg=BG, fg=MUTED).pack(side=tk.LEFT, pady=4)
 
-        # Drop zone
         self.drop_frame = tk.Frame(
             self, bg=DROP_BG, bd=0,
             highlightthickness=2,
@@ -98,7 +129,6 @@ class App(_Base):
             command=self._pick_files
         ).pack(pady=(0, 10))
 
-        # File list
         list_outer = tk.Frame(self, bg=BG)
         list_outer.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 12))
 
@@ -127,7 +157,6 @@ class App(_Base):
             command=self._remove_selected
         ).pack(anchor=tk.E, pady=(4, 0))
 
-        # Action buttons
         btn_row = tk.Frame(self, bg=BG)
         btn_row.pack(fill=tk.X, padx=24, pady=(0, 18))
 
@@ -183,7 +212,6 @@ class App(_Base):
         if not added:
             return
         self.status_var.set(f"Добавлено: {len(added)}. Всего файлов: {len(self.files)}")
-        # Suggest action after drop
         if len(self.files) >= 2:
             if messagebox.askyesno(
                     "Объединить?",
@@ -248,21 +276,28 @@ class App(_Base):
 
             out_wb = Workbook()
             out_ws = out_wb.active
-            headers_written = False
+            dest_row = 1
+            first = True
 
             for fpath in self.files:
                 wb = load_workbook(fpath)
                 ws = wb.active
-                rows = list(ws.iter_rows(values_only=True))
-                if not rows:
+                src_rows = list(ws.iter_rows())
+                if not src_rows:
                     continue
-                if not headers_written:
-                    for row in rows:
-                        out_ws.append(list(row))
-                    headers_written = True
+
+                if first:
+                    _copy_col_dims(ws, out_ws)
+                    first = False
+                    start = 0          # include header
                 else:
-                    for row in rows[1:]:   # skip header
-                        out_ws.append(list(row))
+                    start = 1          # skip header of subsequent files
+
+                for src_idx, row in enumerate(src_rows[start:], start + 1):
+                    for col_idx, src_cell in enumerate(row, 1):
+                        _copy_cell(src_cell, out_ws.cell(row=dest_row, column=col_idx))
+                    _copy_row_height(ws, src_idx, out_ws, dest_row)
+                    dest_row += 1
 
             out_wb.save(out_path)
             self.status_var.set(
@@ -300,24 +335,35 @@ class App(_Base):
 
             wb = load_workbook(fpath)
             ws = wb.active
-            all_rows = list(ws.iter_rows(values_only=True))
-            if not all_rows:
+            src_rows = list(ws.iter_rows())
+            if not src_rows:
                 messagebox.showwarning("Файл пуст", "Файл не содержит данных.")
                 return
 
-            headers = list(all_rows[0])
-            data = all_rows[1:]
-
-            chunks = _make_chunks(data, mode, value)
+            header_row = src_rows[0]
+            data_rows = src_rows[1:]
+            chunks = _make_chunks(data_rows, mode, value)
 
             base = os.path.splitext(os.path.basename(fpath))[0]
             saved = 0
             for i, chunk in enumerate(chunks):
                 new_wb = Workbook()
                 new_ws = new_wb.active
-                new_ws.append(headers)
-                for row in chunk:
-                    new_ws.append(list(row))
+
+                _copy_col_dims(ws, new_ws)
+
+                # header → row 1
+                for col_idx, src_cell in enumerate(header_row, 1):
+                    _copy_cell(src_cell, new_ws.cell(row=1, column=col_idx))
+                _copy_row_height(ws, 1, new_ws, 1)
+
+                # data → rows 2+
+                for dest_idx, src_row in enumerate(chunk, 2):
+                    src_row_idx = src_row[0].row
+                    for col_idx, src_cell in enumerate(src_row, 1):
+                        _copy_cell(src_cell, new_ws.cell(row=dest_idx, column=col_idx))
+                    _copy_row_height(ws, src_row_idx, new_ws, dest_idx)
+
                 out_path = os.path.join(out_dir, f"{base}_часть{i + 1}.xlsx")
                 new_wb.save(out_path)
                 saved += 1
